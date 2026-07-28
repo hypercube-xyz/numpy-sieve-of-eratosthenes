@@ -1,92 +1,51 @@
-import gc
+from math import isqrt
+
 import numpy as np
-import time
-import tracemalloc
 
-ERROR_INVALID_VALUE = "Error: Value Invalid"
+__all__ = ["count_primes", "eratosthenes"]
 
-def eratosthenes(n: int):
-    number = n + 1
-    is_prime = np.ones(number, dtype=bool)
+_MAX_LIMIT = int(np.iinfo(np.intp).max)
 
-    for i in range(2, int(n**0.5) + 1):
-        if is_prime[i]:
-            is_prime[i**2::i] = False
 
-    return np.flatnonzero(is_prime)[2:]
+def _validate_limit(limit: int | np.integer) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, (int, np.integer)):
+        raise TypeError("limit must be an integer")
 
-def eratosthenes_odd(n: int):
-    number = (n - 1) // 2 + 1
-    is_prime = np.ones(number, dtype=bool)
+    limit = int(limit)
+    if limit < 0:
+        raise ValueError("limit must be greater than or equal to 0")
+    if limit > _MAX_LIMIT:
+        raise ValueError("limit is too large for this platform")
+    return limit
 
-    for i in range(3, int(n**0.5) + 1, 2):
-        if is_prime[i//2]:
-            is_prime[i*i//2::i] = False
 
-    return np.insert(2 * np.flatnonzero(is_prime)[1:] + 1, 0, 2)
+def _prime_mask(limit: int) -> np.ndarray:
+    """Return a mask where slot 0 is 2 and slot i >= 1 is 2 * i + 1."""
+    mask = np.ones((limit + 1) // 2, dtype=np.bool_)
 
-def get_mode():
-    while True:
-        print("\nChoose a mode of operation")
-        print("1. Basic (recommend if less than 1,000,000)")
-        print("2. Odd Numbers (recommend if more than 1,000,000)")
+    for prime in range(3, isqrt(limit) + 1, 2):
+        if mask[prime // 2]:
+            mask[prime * prime // 2 :: prime] = False
 
-        mode = input("\nEnter mode (or 'q' to quit): ")
-        if mode.lower() == 'q':
-            print("Exit Program")
-            exit()
+    return mask
 
-        try:
-            mode = int(mode)
-            if mode == 1 or mode == 2:
-                return mode
-            else:
-                print(ERROR_INVALID_VALUE)
-        except ValueError:
-            print(ERROR_INVALID_VALUE)
 
-def get_number():
-    while True:
-        number = input("\nEnter number (or 'q' to quit): ")
-        if number.lower() == 'q':
-            print("Exit Program")
-            return None
+def eratosthenes(limit: int | np.integer) -> np.ndarray:
+    """Return every prime up to and including limit as a NumPy int64 array."""
+    limit = _validate_limit(limit)
+    if limit < 2:
+        return np.empty(0, dtype=np.int64)
 
-        try:
-            number = int(number)
-            if 2 <= number <= 1000000000:
-                return number
-            else:
-                print("Error: Value must be 2 - 1000000000\n")
-        except Exception:
-            print(ERROR_INVALID_VALUE)
+    primes = np.flatnonzero(_prime_mask(limit)).astype(np.int64, copy=False)
+    np.multiply(primes, 2, out=primes)
+    np.add(primes, 1, out=primes)
+    primes[0] = 2
+    return primes
 
-def main():
-    mode = get_mode()
-    
-    while True:
-        number = get_number()
-        if number is None:
-            break
 
-        tracemalloc.start()
-        start = time.perf_counter()
-
-        if mode == 2:
-            primes = eratosthenes_odd(number)
-        else:
-            primes = eratosthenes(number)
-
-        end = time.perf_counter()
-        current, peak = tracemalloc.get_traced_memory()
-
-        print("Primes: ", primes)
-        print("Found prime numbers: ", len(primes))
-        
-        print("\nDuration: %.6f s." % (end - start))
-        print("Current memory: %.3f MB" % (current / (1024 * 1024)))
-        print("Peak memory: %.3f MB" % (peak / (1024 * 1024)))
-        tracemalloc.stop() 
-
-if __name__ == '__main__':
-    main()
+def count_primes(limit: int | np.integer) -> int:
+    """Return the number of primes up to and including limit."""
+    limit = _validate_limit(limit)
+    if limit < 2:
+        return 0
+    return int(np.count_nonzero(_prime_mask(limit)))
