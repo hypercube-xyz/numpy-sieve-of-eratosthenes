@@ -3,10 +3,23 @@ import sys
 import unittest
 from math import isqrt
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
+import segmented
+
+from benchmark import _python_count_primes, _python_eratosthenes
 from eratosthenes import count_primes, eratosthenes
+from segmented import (
+    count_primes as count_primes_segmented,
+    eratosthenes as eratosthenes_segmented,
+)
+
+_IMPLEMENTATIONS = (
+    (eratosthenes, count_primes),
+    (eratosthenes_segmented, count_primes_segmented),
+)
 
 
 def reference_primes(limit: int) -> list[int]:
@@ -20,45 +33,70 @@ def reference_primes(limit: int) -> list[int]:
 class SieveTests(unittest.TestCase):
     def test_matches_reference_for_small_limits(self) -> None:
         for limit in range(501):
-            with self.subTest(limit=limit):
-                expected = reference_primes(limit)
-                actual = eratosthenes(limit)
-                np.testing.assert_array_equal(
-                    actual, np.asarray(expected, dtype=np.int64), strict=True
-                )
-                self.assertEqual(count_primes(limit), len(expected))
+            expected = np.asarray(reference_primes(limit), dtype=np.int64)
+            for find, count in _IMPLEMENTATIONS:
+                with self.subTest(algorithm=find.__module__, limit=limit):
+                    np.testing.assert_array_equal(find(limit), expected, strict=True)
+                    self.assertEqual(count(limit), expected.size)
+            self.assertEqual(_python_eratosthenes(limit), expected.tolist())
+            self.assertEqual(_python_count_primes(limit), expected.size)
 
     def test_known_prime_count(self) -> None:
-        self.assertEqual(count_primes(1_000_000), 78_498)
+        for _, count in _IMPLEMENTATIONS:
+            self.assertEqual(count(1_000_000), 78_498)
+
+    def test_matches_direct_sieve_across_small_segments(self) -> None:
+        with patch.object(segmented, "_SEGMENT_SIZE", 7):
+            for limit in range(501):
+                with self.subTest(limit=limit):
+                    expected = eratosthenes(limit)
+                    np.testing.assert_array_equal(
+                        segmented.eratosthenes(limit),
+                        expected,
+                        strict=True,
+                    )
+                    self.assertEqual(segmented.count_primes(limit), expected.size)
 
     def test_result_contract(self) -> None:
-        result = eratosthenes(100)
-        self.assertEqual(result.ndim, 1)
-        self.assertEqual(result.dtype, np.dtype(np.int64))
-        self.assertIsInstance(count_primes(100), int)
+        for find, count in _IMPLEMENTATIONS:
+            result = find(100)
+            self.assertEqual(result.ndim, 1)
+            self.assertEqual(result.dtype, np.dtype(np.int64))
+            self.assertIsInstance(count(100), int)
 
     def test_accepts_numpy_integers(self) -> None:
-        for value in (np.int32(30), np.int64(30), np.uint32(30)):
-            with self.subTest(value=value):
-                np.testing.assert_array_equal(
-                    eratosthenes(value),
-                    [2, 3, 5, 7, 11, 13, 17, 19, 23, 29],
-                    strict=True,
-                )
-                self.assertEqual(count_primes(value), 10)
+        for find, count in _IMPLEMENTATIONS:
+            for value in (np.int32(30), np.int64(30), np.uint32(30)):
+                with self.subTest(function=find.__module__, value=value):
+                    np.testing.assert_array_equal(
+                        find(value),
+                        [2, 3, 5, 7, 11, 13, 17, 19, 23, 29],
+                        strict=True,
+                    )
+                    self.assertEqual(count(value), 10)
 
     def test_rejects_invalid_types(self) -> None:
-        for function in (eratosthenes, count_primes):
+        for function in (
+            eratosthenes,
+            count_primes,
+            eratosthenes_segmented,
+            count_primes_segmented,
+        ):
             for value in (True, np.bool_(True), 1.5, "10", None, [10]):
-                with self.subTest(function=function.__name__, value=value):
+                with self.subTest(function=function.__module__, value=value):
                     with self.assertRaises(TypeError):
                         function(value)  # type: ignore[arg-type]
 
     def test_rejects_out_of_range_values(self) -> None:
         too_large = int(np.iinfo(np.intp).max) + 1
-        for function in (eratosthenes, count_primes):
+        for function in (
+            eratosthenes,
+            count_primes,
+            eratosthenes_segmented,
+            count_primes_segmented,
+        ):
             for value in (-1, np.int64(-1), too_large, np.uint64(2**64 - 1)):
-                with self.subTest(function=function.__name__, value=value):
+                with self.subTest(function=function.__module__, value=value):
                     with self.assertRaises(ValueError):
                         function(value)
 

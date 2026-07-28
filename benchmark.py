@@ -1,14 +1,53 @@
 import argparse
 import platform
+import sys
 from collections.abc import Callable
+from math import isqrt
 from statistics import median
+from struct import calcsize
 from timeit import repeat
 
 import numpy as np
 
-from eratosthenes import count_primes, eratosthenes
+from eratosthenes import (
+    _validate_limit,
+    count_primes as count_primes_direct,
+    eratosthenes as eratosthenes_direct,
+)
+from segmented import (
+    _SEGMENT_SIZE,
+    count_primes as count_primes_segmented,
+    eratosthenes as eratosthenes_segmented,
+)
 
-Operation = Callable[[int], int | np.ndarray]
+Operation = Callable[[int], int | list[int] | np.ndarray]
+
+
+def _python_mask(limit: int) -> list[bool]:
+    mask = [True] * ((limit + 1) // 2)
+
+    for prime in range(3, isqrt(limit) + 1, 2):
+        if mask[prime // 2]:
+            for index in range(prime * prime // 2, len(mask), prime):
+                mask[index] = False
+
+    return mask
+
+
+def _python_eratosthenes(limit: int) -> list[int]:
+    limit = _validate_limit(limit)
+    if limit < 2:
+        return []
+
+    mask = _python_mask(limit)
+    return [2] + [2 * index + 1 for index in range(1, len(mask)) if mask[index]]
+
+
+def _python_count_primes(limit: int) -> int:
+    limit = _validate_limit(limit)
+    if limit < 2:
+        return 0
+    return sum(_python_mask(limit))
 
 
 def _parse_args() -> argparse.Namespace:
@@ -26,6 +65,11 @@ def _parse_args() -> argparse.Namespace:
         choices=("find", "count", "both"),
         default="both",
     )
+    parser.add_argument(
+        "--algorithm",
+        choices=("python", "direct", "segmented", "numpy", "all"),
+        default="numpy",
+    )
     parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
 
@@ -38,8 +82,15 @@ def _parse_args() -> argparse.Namespace:
 
 def _measure(function: Operation, limit: int, repeats: int) -> tuple[float, int, int]:
     result = function(limit)
-    count = int(result if isinstance(result, int) else result.size)
-    result_bytes = 0 if isinstance(result, int) else result.nbytes
+    if isinstance(result, int):
+        count = result
+        result_bytes = 0
+    elif isinstance(result, np.ndarray):
+        count = result.size
+        result_bytes = result.nbytes
+    else:
+        count = len(result)
+        result_bytes = sys.getsizeof(result) + sum(map(sys.getsizeof, result))
     del result
 
     duration = median(repeat(lambda: function(limit), repeat=repeats, number=1))
@@ -48,13 +99,34 @@ def _measure(function: Operation, limit: int, repeats: int) -> tuple[float, int,
 
 def main() -> int:
     args = _parse_args()
-    functions: dict[str, Operation] = {
-        "find": eratosthenes,
-        "count": count_primes,
+    implementations: dict[str, dict[str, Operation]] = {
+        "python": {
+            "find": _python_eratosthenes,
+            "count": _python_count_primes,
+        },
+        "direct": {
+            "find": eratosthenes_direct,
+            "count": count_primes_direct,
+        },
+        "segmented": {
+            "find": eratosthenes_segmented,
+            "count": count_primes_segmented,
+        },
     }
-    operations = (
-        tuple(functions) if args.operation == "both" else (args.operation,)
+    labels = {
+        "python": "Pure Python",
+        "direct": "NumPy Direct",
+        "segmented": "NumPy Segmented",
+    }
+    operation_names = (
+        ("find", "count") if args.operation == "both" else (args.operation,)
     )
+    if args.algorithm == "all":
+        algorithm_names = tuple(implementations)
+    elif args.algorithm == "numpy":
+        algorithm_names = ("direct", "segmented")
+    else:
+        algorithm_names = (args.algorithm,)
 
     runtime = (
         f"{platform.python_implementation()} {platform.python_version()} | "
@@ -62,28 +134,46 @@ def main() -> int:
     )
     print(runtime)
     print(
-        f"{'Limit':>14}  {'Operation':>9}  {'Median':>10}  "
+        f"{'Limit':>14}  {'Algorithm':>15}  {'Operation':>9}  {'Median':>10}  "
         f"{'Primes':>11}  {'Mask MiB':>10}  {'Result MiB':>10}"
     )
 
     failed = False
     for limit in args.limits:
-        for operation in operations:
-            try:
-                duration, count, result_bytes = _measure(
-                    functions[operation], limit, args.repeats
-                )
-            except (MemoryError, ValueError) as error:
-                print(f"{limit:>14,}  {operation:>9}  error: {error}")
-                failed = True
-                continue
+        for algorithm in algorithm_names:
+            label = labels[algorithm]
+            for operation in operation_names:
+                try:
+                    duration, count, result_bytes = _measure(
+                        implementations[algorithm][operation],
+                        limit,
+                        args.repeats,
+                    )
+                except (MemoryError, ValueError) as error:
+                    print(
+                        f"{limit:>14,}  {label:>15}  {operation:>9}  "
+                        f"error: {error}"
+                    )
+                    failed = True
+                    continue
 
-            mask_bytes = 0 if limit < 2 else (limit + 1) // 2
-            print(
-                f"{limit:>14,}  {operation:>9}  {duration:>9.6f}s  "
-                f"{count:>11,}  {mask_bytes / 1024**2:>10.2f}  "
-                f"{result_bytes / 1024**2:>10.2f}"
-            )
+                if limit < 2:
+                    mask_bytes = 0
+                elif algorithm == "python":
+                    mask_bytes = (
+                        sys.getsizeof([])
+                        + ((limit + 1) // 2) * calcsize("P")
+                    )
+                elif algorithm == "direct":
+                    mask_bytes = (limit + 1) // 2
+                else:
+                    mask_bytes = min(_SEGMENT_SIZE, (limit - 1) // 2)
+                print(
+                    f"{limit:>14,}  {label:>15}  {operation:>9}  "
+                    f"{duration:>9.6f}s  {count:>11,}  "
+                    f"{mask_bytes / 1024**2:>10.2f}  "
+                    f"{result_bytes / 1024**2:>10.2f}"
+                )
     return int(failed)
 
 

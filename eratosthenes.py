@@ -20,7 +20,7 @@ def _validate_limit(limit: int | np.integer) -> int:
 
 
 def _prime_mask(limit: int) -> np.ndarray:
-    """Return a mask where slot 0 is 2 and slot i >= 1 is 2 * i + 1."""
+    """Return a mask for limit >= 2; slot 0 is 2 and slot i >= 1 is 2 * i + 1."""
     mask = np.ones((limit + 1) // 2, dtype=np.bool_)
 
     for prime in range(3, isqrt(limit) + 1, 2):
@@ -37,8 +37,8 @@ def eratosthenes(limit: int | np.integer) -> np.ndarray:
         return np.empty(0, dtype=np.int64)
 
     primes = np.flatnonzero(_prime_mask(limit)).astype(np.int64, copy=False)
-    np.multiply(primes, 2, out=primes)
-    np.add(primes, 1, out=primes)
+    primes *= 2
+    primes += 1
     primes[0] = 2
     return primes
 
