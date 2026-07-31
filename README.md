@@ -2,179 +2,223 @@
 
 [![Tests](https://github.com/hypercube-xyz/numpy-sieve-of-eratosthenes/actions/workflows/tests.yml/badge.svg)](https://github.com/hypercube-xyz/numpy-sieve-of-eratosthenes/actions/workflows/tests.yml)
 
-An educational implementation of the Sieve of Eratosthenes that explores why
-NumPy can make array-heavy Python code much faster without changing the
-algorithm's asymptotic complexity.
+This repository provides an educational comparison of three odd-only
+implementations of the Sieve of Eratosthenes: a Python-list baseline with
+explicit loops, a direct NumPy implementation, and a segmented NumPy
+implementation with a reusable marking buffer.
 
-The repository keeps two implementations:
-
-- `eratosthenes.py`: the short, direct odd-only sieve
-- `segmented.py`: the cache-friendlier segmented sieve
-
-Both omit even candidates greater than `2` and mark composites with NumPy slice
-assignments. The direct sieve reserves one mask slot for `2`; the segmented
-sieve handles it separately.
-
-`benchmark.py` also includes a pure-Python version of the same odd-only
-algorithm as an empirical baseline.
-
-This project focuses on learning array processing, memory representation, and
-Python performance with NumPy.
-
-## Requirements
-
-- Python 3.12+
-- NumPy 2.5.1+
+## Quick start
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-On Windows with multiple Python versions installed, run:
-
-```bash
-py -3 -m pip install -r requirements.txt
-```
-
-## Quick start
-
 ```python
-from eratosthenes import eratosthenes
+from eratosthenes import count_primes, eratosthenes
 from segmented import count_primes as count_primes_segmented
 
 print(eratosthenes(30))
 # [ 2  3  5  7 11 13 17 19 23 29]
 
+print(count_primes(1_000_000))
+# 78498
+
 print(count_primes_segmented(1_000_000))
 # 78498
 ```
 
-The limit is inclusive. `eratosthenes(30)` checks values from `0` through `30`.
+The limit is inclusive: `eratosthenes(30)` considers every integer from `0`
+through `30`.
 
-## API
+## Repository layout
 
-### Direct sieve: `eratosthenes.py`
+| File | Purpose |
+| :--- | :--- |
+| `eratosthenes.py` | Direct, odd-only NumPy sieve; returns primes or a count |
+| `segmented.py` | Uses direct base primes, then marks one reusable segment at a time |
+| `benchmark.py` | Python-list baseline and a median execution-time CLI |
+| `test_eratosthenes.py` | Reference comparisons, boundaries, contracts, and regression checks |
 
-#### `eratosthenes(limit)`
+The baseline uses the same odd-only representation as the direct NumPy sieve.
+This keeps the comparison focused on explicit Python loops versus NumPy array
+operations.
 
-Returns every prime up to `limit` as a one-dimensional NumPy `int64` array.
+## Requirements
 
-```python
-eratosthenes(10)
-# array([2, 3, 5, 7])
+- CPython 3.12 or later; CI currently tests 3.12 through 3.14
+- NumPy 2.5.1 or later
+
+Run commands from the cloned repository root:
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest -v
 ```
 
-#### `count_primes(limit)`
+The examples use `python` consistently so installation, tests, and benchmarks
+run with the same interpreter. On Windows, `py -3` may be used in place of
+every `python` command.
 
-Returns the number of primes without building the final prime array.
+## Interface
 
-```python
-count_primes(10)
-# 4
-```
+Both modules expose the same small interface for examples, tests, and
+benchmarks. The modules are imported directly from the repository root and do
+not provide a packaged or versioned library interface.
 
-### Segmented sieve: `segmented.py`
+`eratosthenes(limit)` returns a one-dimensional NumPy `int64` array, while
+`count_primes(limit)` returns a Python `int` without building the final prime
+array. Import the functions from the implementation you want to run.
 
-The segmented module exposes the same two function names:
+`limit` must be a non-negative Python or NumPy integer. Boolean and non-integer
+values raise `TypeError`. Negative values and values beyond the platform index
+range raise `ValueError`. A valid but impractically large request may still
+raise `MemoryError`.
 
-```python
-from segmented import count_primes, eratosthenes
-```
+## Implementation design
 
-It trades a little setup overhead for a fixed-size working mask and better
-cache locality at large limits.
+### Sieve bounds
 
-`limit` must be a non-negative Python or NumPy integer. Invalid types raise
-`TypeError`. Negative values and values beyond the platform index range raise
-`ValueError`. A valid but impractically large limit may still raise
-`MemoryError`.
+For each discovered prime `p`, the sieve marks multiples of `p` as composite. It
+only needs possible factors through `sqrt(limit)`, and marking can begin at
+`p²` because smaller multiples were already handled by smaller prime factors.
 
-## How the sieves work
+### Odd-only representation
 
-### Shared idea: omit even candidates
-
-Every even number greater than `2` is composite, so neither implementation
-stores it. The direct sieve reserves index `0` for `2`, then stores the odd
-candidates:
+Every even integer greater than `2` is composite, so the implementations omit
+those values. The direct sieve reserves mask index `0` for `2` and maps the
+remaining indices to odd integers:
 
 | Mask index | 0 | 1 | 2 | 3 | 4 | 5 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Represents | `2` | `3` | `5` | `7` | `9` | `11` |
 
-The two index mappings are:
+For direct-mask indices `i >= 1`:
 
 ```text
-direct mask, i >= 1:  value = 2 * i + 1
-segment mask, i >= 0: value = low + 2 * i
+value = 2 * i + 1
 ```
 
-Both representations use approximately half as many mask entries as a full
-boolean sieve.
+This reduces the mask to approximately half the number of entries required by
+a representation that stores every integer.
 
-### Direct sieve
+### Vectorized composite marking
 
-Only possible prime factors up to `sqrt(limit)` need to be processed. For each
-prime `p`, the direct sieve marks one slice:
+The Python baseline marks each composite through an explicit loop:
+
+```python
+for index in range(p * p // 2, len(mask), p):
+    mask[index] = False
+```
+
+The direct NumPy sieve describes the same positions with one slice assignment:
 
 ```python
 mask[p * p // 2 :: p] = False
 ```
 
-The slice starts at `p²` because smaller multiples were already handled by
-smaller primes. Its stride is `p` mask slots, which corresponds to `2p` in the
-integer sequence. Python chooses the slice; NumPy performs the repeated writes.
+The slice describes a strided region of the homogeneous buffer instead of
+building a Python list of selected indices. A stride of `p` mask entries
+corresponds to a difference of `2p` in the odd integer sequence. NumPy performs
+the selected writes in native code without returning to a Python loop for each
+element.
 
-### Segmented sieve
+### Segmented marking
 
-The segmented sieve first calls the direct sieve for the base primes up to
-`sqrt(limit)`. It then processes `8,388,608` odd candidates (8 MiB) at a time.
-For every base prime `p`, `(-low) % p` is the distance from `low` to the next
-multiple of `p`. The first odd multiple inside the segment is then:
+The direct sieve allocates one mask for the entire range. The segmented version
+first uses the direct sieve to find base primes through `sqrt(limit)`, then
+processes at most `8,388,608` odd candidates at a time. A NumPy boolean occupies
+one byte, so a full segment mask has an 8 MiB payload.
+
+For a segment beginning at the odd value `low`, mask index `i` represents:
+
+```text
+value = low + 2 * i
+```
+
+For every odd base prime `p`, an initial multiple is calculated as:
 
 ```text
 square         = p * p
 first_multiple = low + ((-low) % p)
 start          = max(square, first_multiple)
-start_index    = (start - low) // 2
 ```
 
-If `start` is even, adding `p` moves it to the next odd multiple. Marking then
-uses the same compact slice operation:
+If `start` is even, adding `p` moves it to the next odd multiple. The resulting
+odd `start` is the first value marked in the segment:
 
 ```python
+start_index = (start - low) // 2
 mask[start_index::p] = False
 ```
 
-The module always uses segmentation. Callers choose the direct or segmented
-module explicitly; there is no machine-dependent crossover threshold.
+The same buffer is filled with `True` and reused for the next segment. This
+keeps the marking-mask payload bounded and can improve memory locality at large
+limits. It does not bound the memory needed to return every prime.
+
+Direct sieve diagram:
 
 ```mermaid
 flowchart LR
-    subgraph D["Direct sieve"]
-        D1["Allocate one odd-only mask"]
-        D2["Mark from p²<br/>for p ≤ √limit"]
-        D3["Count or convert indices"]
-        D1 --> D2 --> D3
+    subgraph direct["Direct sieve"]
+        direction LR
+
+        D0["Inclusive limit"]
+        D1["<b>Allocate odd-only mask</b><br/><small>one mask for all odd candidates</small>"]
+        D2["<b>Mark composites</b><br/><small>start at p² for each discovered prime</small>"]
+        D3["<b>Scan final mask</b><br/><small>count or locate surviving entries</small>"]
+        D4["<b>Return result</b><br/><small>prime count or int64 prime array</small>"]
+
+        D0 --> D1
+        D1 --> D2
+        D2 --> D3
+        D3 --> D4
     end
 
-    subgraph S["Segmented sieve"]
-        S1["Direct sieve<br/>to √limit"]
-        S2["Allocate next<br/>≤ 8 MiB segment"]
-        S3["Mark with<br/>base primes"]
-        S4["Count or save<br/>prime chunk"]
-        S5{"More segments?"}
-        S6["Sum counts or<br/>concatenate chunks"]
-        S1 --> S2 --> S3 --> S4 --> S5
-        S5 -->|"Yes"| S2
-        S5 -->|"No"| S6
-    end
+    classDef shared fill:#44403c,stroke:#78716c,stroke-width:2px,color:#ffffff
+    classDef directStep fill:#3730a3,stroke:#818cf8,stroke-width:2px,color:#ffffff
+
+    class D0,D4 shared
+    class D1,D2,D3 directStep
+
+    style direct fill:transparent,stroke:#818cf8,stroke-width:2px
 ```
 
-### Produce the answer
+Segmented sieve diagram:
 
-`np.count_nonzero(mask)` counts primes without allocating a result array.
-`np.flatnonzero(mask)` returns their indices in compiled NumPy code. Those
-indices are converted in place:
+```mermaid
+flowchart LR
+    subgraph segmented["Segmented sieve"]
+        direction LR
+
+        S0["Inclusive limit"]
+        S1["<b>Find base primes</b><br/><small>all primes up to √limit</small>"]
+        S2["<b>Fill and mark segment</b><br/><small>reuse one 8 MiB buffer</small>"]
+        S3["<b>Process survivors</b><br/><small>count values or save one prime chunk</small>"]
+        Q{"More<br/>segments?"}
+        S4["<b>Return result</b><br/><small>sum counts or concatenate chunks</small>"]
+
+        S0 --> S1
+        S1 --> S2
+        S2 --> S3
+        S3 --> Q
+        Q -->|No| S4
+        Q -->|Yes| S2
+    end
+
+    classDef shared fill:#44403c,stroke:#78716c,stroke-width:2px,color:#ffffff
+    classDef segmentedStep fill:#065f46,stroke:#34d399,stroke-width:2px,color:#ffffff
+
+    class S0,S4 shared
+    class S1,S2,S3,Q segmentedStep
+
+    style segmented fill:transparent,stroke:#34d399,stroke-width:2px
+```
+
+### Result construction
+
+`np.count_nonzero(mask)` counts primes without allocating their final values.
+`np.flatnonzero(mask)` returns the surviving indices, which are converted in
+place to `int64` prime values:
 
 ```text
 direct:    prime = 2 * index + 1
@@ -182,213 +226,181 @@ segmented: prime = low + 2 * index
 ```
 
 The direct sieve replaces its reserved first value with `2`. The segmented
-sieve handles `2` separately and concatenates its prime chunks once. On 64-bit
-platforms, `flatnonzero()` already returns 64-bit indices, so the conversion to
-`int64` can usually reuse the existing allocation.
+sieve handles `2` separately and concatenates its saved prime chunks once.
 
-## Why is it fast?
+## Performance characteristics
 
-NumPy does not change the Sieve of Eratosthenes from `O(n log log n)` into a
-lower-complexity algorithm. The speedup comes from doing less work and making
-the remaining repeated work cheaper.
+NumPy does not improve the sieve's mathematical complexity. It helps here
+because the workload repeatedly updates regular positions in a homogeneous
+array:
 
-| Layer | Optimization | Effect |
-| --- | --- | --- |
-| Algorithm | Omit evens, stop at `sqrt(n)`, start at `p²` | Fewer candidates and redundant writes |
-| Python/NumPy boundary | Mark a complete arithmetic progression with one slice | Far fewer interpreter iterations |
-| Data representation | Homogeneous one-byte boolean buffer | Compact storage and direct memory access |
-| Result construction | Compiled scan and in-place ufuncs | No Python element loop and fewer allocations |
-| Hardware | Cache and memory bandwidth | Determines throughput after interpreter overhead falls |
+- one slice assignment replaces many Python loop iterations
+- the odd-only mask performs fewer writes and scans
+- each NumPy boolean occupies one byte in the array buffer
+- `flatnonzero()` and `count_nonzero()` perform their scans in NumPy code
 
-Some NumPy operations used here, including boolean counting and the final
-integer transformations, may use SIMD. SIMD helps those steps, but most of the
-speedup comes from moving repeated work out of Python and storing only odd
-candidates.
+A Python list stores references to shared `True` and `False` objects. On a
+64-bit CPython build, each list slot is normally an 8-byte pointer, while the
+NumPy mask stores each boolean value directly in one byte. This explains the
+approximately eightfold mask-payload difference reported by the benchmark.
 
-### Pure-Python baseline
+An `ndarray` also contains metadata such as its dtype, shape, strides, and data
+pointer. The benchmark reports selected payload estimates rather than total
+process memory, so allocator state, Python objects, NumPy metadata, and temporary
+arrays are not fully represented by those columns.
 
-The benchmark baseline uses the same odd-only sieve but stores its mask in a
-Python list and marks each composite in a Python loop:
+For very small inputs, NumPy setup costs can outweigh the work saved. The
+performance difference is an empirical result for this workload, not a general
+rule that NumPy is faster than Python for every program.
 
-```python
-for index in range(p * p // 2, len(mask), p):
-    mask[index] = False
-```
+## Complexity and memory
 
-For every composite value, the interpreter must advance the iterator, handle a
-Python integer, resolve the indexed assignment, and return to the top of the
-loop.
+Let `n` be the inclusive limit, `B` the number of odd candidates in one
+segment, `S` the number of segments, and `π(n)` the number of primes no greater
+than `n`.
 
-The NumPy version describes the same access pattern once:
+- Direct sieve marking is `O(n log log n)` and its mask payload is about
+  `n / 2` bytes.
+- Segmented composite marking performs the same sieve writes. This particular
+  implementation also scans the relevant base-prime list once per segment,
+  adding up to roughly `O(S · π(sqrt(n)))` Python-level checks.
+- The segmented marking buffer is `O(B)` and is reused. The direct sieve and
+  base-prime list through `sqrt(n)` add setup memory.
+- Returning every prime requires an `int64` output of `8 · π(n)` bytes in both
+  NumPy implementations. The segmented `find` operation also retains chunks
+  before the final concatenation.
+- `count_primes()` avoids the final prime array, so segmentation has its clearest
+  memory benefit for count-only workloads.
 
-```python
-mask[p * p // 2 :: p] = False
-```
-
-Python constructs a slice descriptor and enters NumPy once. NumPy performs the
-selected writes in compiled native code before returning control to Python.
-The writes still happen; the optimization removes Python dispatch from each
-individual write.
-
-On a 64-bit CPython build, each list slot is an 8-byte pointer. The boolean
-objects themselves are shared singletons, so the baseline does not allocate a
-new Python object for every mask value. A NumPy boolean uses one byte directly
-in the array buffer.
-
-### What happens inside an `ndarray`?
-
-A NumPy array contains a homogeneous data buffer plus metadata such as:
-
-- `dtype`: the type and width of every element
-- `shape` and `size`: the dimensions and element count
-- `strides`: the byte distance used to move between elements
-- a pointer to the data buffer
-
-Because every mask element has the same fixed-width boolean type, NumPy does
-not need Python's dynamic object machinery for every stored value.
-
-A basic slice can be represented by a start offset, element count, and stride.
-It does not require a Python list containing every selected index. A simplified
-model is:
-
-```text
-address = data + start_offset
-
-repeat for each selected element:
-    write False at address
-    address += stride_in_bytes
-```
-
-This simplified model shows the repeated address calculation and write running
-in a native loop over a typed buffer.
-
-### Why the smaller mask matters
-
-Omitting even candidates reduces more than the allocation size:
-
-- roughly half as many mask values are initialized
-- fewer composite positions are written
-- `flatnonzero()` and `count_nonzero()` scan fewer bytes
-- more active data can fit in CPU caches
-- less data moves between caches and RAM
-
-Composite marking performs little arithmetic. For large limits it is largely a
-memory-access workload. Small primes create dense writes; larger primes create
-sparser strided writes. Without segmentation, cache misses, memory latency, and
-memory bandwidth increasingly dominate as the mask grows.
-
-## Time and memory
-
-### Complexity
-
-- Time: `O(n log log n)`
-- Pure-Python working mask: approximately `(n / 2) * pointer size`
-- Direct working mask: approximately `n / 2` bytes
-- Segmented working memory: up to an 8 MiB mask plus a direct sieve to `sqrt(n)`
-- Returned prime array: 8 bytes per prime
-
-A NumPy boolean occupies one byte in this mask. At `100,000,000`, the segmented
-working mask is 8 MiB. The 5,761,455 returned `int64` primes occupy about
-`43.96 MiB`.
-
-Array sizes are not the same as peak process memory. Python, NumPy metadata,
-the memory allocator, base primes, result chunks, and concatenation add
-overhead. Both `count_primes()` implementations avoid the final result array.
+At `100,000,000`, the direct mask payload is about `47.68 MiB`; the reusable
+segment mask is `8 MiB`. The `5,761,455` returned `int64` primes require about
+`43.96 MiB` regardless of which NumPy marking strategy found them.
 
 ## Benchmark
 
-Run the defaults:
+Run the default NumPy comparison:
 
 ```bash
 python benchmark.py
 ```
 
-Choose limits, algorithm, operation, and repeat count:
+Choose limits, implementations, operations, and the number of executions:
 
 ```bash
-python benchmark.py 1000000 10000000 --algorithm all --repeats 10
-python benchmark.py 100000000 --algorithm segmented --operation count --repeats 10
+python benchmark.py 1000000 10000000 --algorithm all --repeats 7
+python benchmark.py 100000000 --algorithm segmented --operation count --repeats 7
 ```
 
 Algorithms:
 
-- `python`: benchmark the pure-Python baseline
-- `direct`: benchmark `eratosthenes.py`
-- `segmented`: benchmark `segmented.py`
-- `numpy`: benchmark both NumPy implementations; this is the default
-- `all`: benchmark every implementation
+- `python`: odd-only Python-list baseline with explicit loops
+- `direct`: direct NumPy sieve
+- `segmented`: segmented NumPy sieve
+- `numpy`: both NumPy implementations; this is the default
+- `all`: every implementation
 
 Operations:
 
-- `find`: build and return the prime array
-- `count`: count primes without returning the array
+- `find`: return every prime
+- `count`: return only the count
 - `both`: benchmark both; this is the default
 
-Each case gets one untimed warm-up. The reported duration is the median of the
-timed runs. Every run includes mask allocation. `find` also includes result
-construction, while `count` includes the final boolean count. Python mask sizes
-include the list header and pointer slots; shared boolean singletons are not
-counted repeatedly. Python result sizes include the list, its pointers, and
-referenced integer objects. NumPy sizes report array payloads. These figures
-are not peak resident memory.
+### Measurement methodology
 
-### Sample result
+For each successful case, the benchmark executes the selected function exactly
+`repeats` times and reports the median execution time. `--repeats 1` therefore
+performs one execution.
 
-The following results were measured over 10 runs on:
+Timing begins immediately before the function call and stops when it returns.
+Each execution includes mask allocation or reset and includes result creation
+for `find` or the final boolean count for `count`. Result-size calculation and
+result disposal happen after the timer stops.
 
-- AMD Ryzen 5 7500F
-- Python 3.14.6
-- NumPy 2.5.1
+`Mask storage MiB` is representation-specific: the Python estimate includes the
+list header and pointer slots, while NumPy values include only array-buffer
+bytes. `Result MiB` reports the NumPy array payload or an approximate Python
+list-plus-integers size. These figures are not peak resident memory.
 
-| Limit | Algorithm | Find primes | Count only | Mask | Result |
-| ---: | :--- | ---: | ---: | ---: | ---: |
-| 1,000,000 | Pure Python | 0.023679 s | 0.013144 s | 3.81 MiB | 2.70 MiB |
-| 1,000,000 | NumPy Direct | 0.000644 s | 0.000388 s | 0.48 MiB | 0.60 MiB |
-| 1,000,000 | NumPy Segmented | 0.000803 s | 0.000317 s | 0.48 MiB | 0.60 MiB |
-| 10,000,000 | Pure Python | 0.239802 s | 0.144357 s | 38.15 MiB | 22.82 MiB |
-| 10,000,000 | NumPy Direct | 0.006706 s | 0.004095 s | 4.77 MiB | 5.07 MiB |
-| 10,000,000 | NumPy Segmented | 0.007061 s | 0.004064 s | 4.77 MiB | 5.07 MiB |
-| 100,000,000 | Pure Python | 2.416512 s | 1.530187 s | 381.47 MiB | 197.80 MiB |
-| 100,000,000 | NumPy Direct | 0.146733 s | 0.122938 s | 47.68 MiB | 43.96 MiB |
-| 100,000,000 | NumPy Segmented | 0.117301 s | 0.056383 s | 8.00 MiB | 43.96 MiB |
-| 1,000,000,000 | NumPy Direct | 2.437213 s | 2.197343 s | 476.84 MiB | 387.94 MiB |
-| 1,000,000,000 | NumPy Segmented | 1.845142 s | 0.534450 s | 8.00 MiB | 387.94 MiB |
+Timings depend on the CPU, cache, RAM, NumPy build, operating-system load,
+thermal state, and power settings. Differences of only a few percent should be
+treated as inconclusive and rerun rather than interpreted as a stable winner.
 
-Relative impact is easier to see as a ratio:
+### Benchmark results
 
-| Change | Limit | Find speed | Count speed | Mask reduction |
-| :--- | ---: | ---: | ---: | ---: |
-| Pure Python → NumPy Direct | 1,000,000 | 36.77× | 33.88× | 8.00× |
-| Pure Python → NumPy Direct | 10,000,000 | 35.76× | 35.25× | 8.00× |
-| Pure Python → NumPy Direct | 100,000,000 | 16.47× | 12.45× | 8.00× |
-| NumPy Direct → NumPy Segmented | 10,000,000 | 0.95× | 1.01× | 1.00× |
-| NumPy Direct → NumPy Segmented | 100,000,000 | 1.25× | 2.18× | 5.96× |
-| NumPy Direct → NumPy Segmented | 1,000,000,000 | 1.32× | 4.11× | 59.60× |
-
-Values above `1×` mean the algorithm to the right of the arrow is faster or
-uses a smaller mask; values below `1×` mean it is slower.
-
-Timings vary between runs. Results depend on CPU cache, RAM, NumPy build,
-operating-system load, and power settings. The direct sieve wins slightly at
-small limits; the segmented sieve wins once memory traffic dominates. The
-Python baseline is omitted at one billion because its cost is already clear.
-
-## Tests
+Benchmarks were run while no other project tasks were active:
 
 ```bash
-python -m unittest -v
+python benchmark.py 1000000 10000000 100000000 --algorithm all --repeats 7
+python benchmark.py 1000000000 --algorithm numpy --repeats 7
 ```
 
-The suite compares the Python baseline and both NumPy implementations with an
-independent reference for every limit from `0` through `500`, exercises many
-small segment boundaries, checks the known prime count at one million, verifies
-the result contract, and tests Python/NumPy integer validation.
+Test machine:
 
-GitHub Actions runs the same tests on Python 3.12, 3.13, and 3.14.
+- AMD Ryzen 5 7500F
+- 32 GiB RAM (2 x 16 GiB DDR5-6000)
+- 64-bit Windows
+- CPython 3.14.6
+- NumPy 2.5.1
 
-## References
+Each duration is the median of seven executions.
+
+| Limit | Implementation | Find time | Count time | Mask storage | Find result |
+| ---: | :--- | ---: | ---: | ---: | ---: |
+| 1,000,000 | Python baseline | 0.0237029 s | 0.0135155 s | 3.81 MiB | 2.70 MiB |
+| 1,000,000 | NumPy direct | 0.00066 s | 0.0003883 s | 0.48 MiB | 0.60 MiB |
+| 1,000,000 | NumPy segmented | 0.000982 s | 0.0004132 s | 0.48 MiB | 0.60 MiB |
+| 10,000,000 | Python baseline | 0.244274 s | 0.147555 s | 38.15 MiB | 22.82 MiB |
+| 10,000,000 | NumPy direct | 0.0067137 s | 0.0045735 s | 4.77 MiB | 5.07 MiB |
+| 10,000,000 | NumPy segmented | 0.0072583 s | 0.004659 s | 4.77 MiB | 5.07 MiB |
+| 100,000,000 | Python baseline | 2.45734 s | 1.56643 s | 381.47 MiB | 197.80 MiB |
+| 100,000,000 | NumPy direct | 0.132943 s | 0.108694 s | 47.68 MiB | 43.96 MiB |
+| 100,000,000 | NumPy segmented | 0.0727138 s | 0.0428918 s | 8.00 MiB | 43.96 MiB |
+| 1,000,000,000 | NumPy direct | 2.46495 s | 2.2268 s | 476.84 MiB | 387.94 MiB |
+| 1,000,000,000 | NumPy segmented | 0.928623 s | 0.503757 s | 8.00 MiB | 387.94 MiB |
+
+### Results analysis
+
+- Direct NumPy was substantially faster than the Python-loop baseline wherever
+  both were measured.
+- Segmentation was not consistently faster at small limits, but was faster at
+  100 million and one billion on this machine while keeping its segment mask at
+  8 MiB. Different hardware or system load can move the crossover point.
+- Segmented `count` avoids both a large marking mask and the final prime array.
+  `find` must still return every prime; at one billion that result is much larger
+  than the segment mask.
+
+## Validation
+
+The suite:
+
+- compares all three implementations with an independent trial-division
+  reference for every limit from `0` through `500`
+- forces small segments to exercise many segment boundaries
+- checks reuse of the segment-mask buffer
+- checks the known prime count at one million
+- verifies output shape, dtype, and Python return types
+- tests Python and NumPy integer validation
+- checks exact benchmark repeat counts and non-zero status on failure
+
+GitHub Actions runs the suite on CPython 3.12, 3.13, and 3.14. The 3.12 job
+tests the declared NumPy minimum, while the newer Python jobs install from
+`requirements.txt`.
+
+## Scope and limitations
+
+- It is not suitable for generating cryptographic primes.
+- The fixed segment size is a deliberate, reproducible choice rather than a
+  machine-specific auto-tuning rule.
+- Very large valid limits can still exhaust memory, especially when returning
+  all primes.
+
+## Technical references
+
+Official documentation for the platform features discussed above:
 
 - [NumPy `ndarray` documentation](https://numpy.org/doc/stable/reference/arrays.ndarray.html)
+- [NumPy indexing documentation](https://numpy.org/doc/stable/user/basics.indexing.html)
+- [Python `perf_counter()` documentation](https://docs.python.org/3/library/time.html#time.perf_counter)
 
 ## License
 

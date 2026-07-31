@@ -3,22 +3,17 @@ import sys
 import unittest
 from math import isqrt
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 import segmented
-
-from benchmark import _python_count_primes, _python_eratosthenes
+from benchmark import _measure, _python_count_primes, _python_eratosthenes
 from eratosthenes import count_primes, eratosthenes
-from segmented import (
-    count_primes as count_primes_segmented,
-    eratosthenes as eratosthenes_segmented,
-)
 
 _IMPLEMENTATIONS = (
     (eratosthenes, count_primes),
-    (eratosthenes_segmented, count_primes_segmented),
+    (segmented.eratosthenes, segmented.count_primes),
 )
 
 
@@ -57,9 +52,18 @@ class SieveTests(unittest.TestCase):
                     )
                     self.assertEqual(segmented.count_primes(limit), expected.size)
 
+    def test_reuses_one_segment_buffer(self) -> None:
+        with patch.object(segmented, "_SEGMENT_SIZE", 7):
+            segments = segmented._segments(20)
+            _, first = next(segments)
+            _, final = next(segments)
+        self.assertEqual((first.size, final.size), (7, 2))
+        self.assertTrue(np.shares_memory(first, final))
+
     def test_result_contract(self) -> None:
         for find, count in _IMPLEMENTATIONS:
             result = find(100)
+            self.assertIsInstance(result, np.ndarray)
             self.assertEqual(result.ndim, 1)
             self.assertEqual(result.dtype, np.dtype(np.int64))
             self.assertIsInstance(count(100), int)
@@ -76,29 +80,32 @@ class SieveTests(unittest.TestCase):
                     self.assertEqual(count(value), 10)
 
     def test_rejects_invalid_types(self) -> None:
-        for function in (
-            eratosthenes,
-            count_primes,
-            eratosthenes_segmented,
-            count_primes_segmented,
-        ):
-            for value in (True, np.bool_(True), 1.5, "10", None, [10]):
-                with self.subTest(function=function.__module__, value=value):
-                    with self.assertRaises(TypeError):
+        for find, count in _IMPLEMENTATIONS:
+            for function in (find, count):
+                for value in (True, np.bool_(True), 1.5, "10", None, [10]):
+                    with (
+                        self.subTest(function=function.__module__, value=value),
+                        self.assertRaises(TypeError),
+                    ):
                         function(value)  # type: ignore[arg-type]
 
     def test_rejects_out_of_range_values(self) -> None:
         too_large = int(np.iinfo(np.intp).max) + 1
-        for function in (
-            eratosthenes,
-            count_primes,
-            eratosthenes_segmented,
-            count_primes_segmented,
-        ):
-            for value in (-1, np.int64(-1), too_large, np.uint64(2**64 - 1)):
-                with self.subTest(function=function.__module__, value=value):
-                    with self.assertRaises(ValueError):
+        for find, count in _IMPLEMENTATIONS:
+            for function in (find, count):
+                for value in (-1, np.int64(-1), too_large, np.uint64(2**64 - 1)):
+                    with (
+                        self.subTest(function=function.__module__, value=value),
+                        self.assertRaises(ValueError),
+                    ):
                         function(value)
+
+    def test_benchmark_repeats_are_executions(self) -> None:
+        operation = Mock(return_value=7)
+        with patch("benchmark.perf_counter", side_effect=range(6)):
+            result = _measure(operation, 7, 3)
+        self.assertEqual(operation.call_count, 3)
+        self.assertEqual(result, (1, 7, 0))
 
     def test_benchmark_fails_when_a_case_fails(self) -> None:
         completed = subprocess.run(

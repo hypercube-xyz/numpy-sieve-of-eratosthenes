@@ -5,20 +5,12 @@ from collections.abc import Callable
 from math import isqrt
 from statistics import median
 from struct import calcsize
-from timeit import repeat
+from time import perf_counter
 
 import numpy as np
 
-from eratosthenes import (
-    _validate_limit,
-    count_primes as count_primes_direct,
-    eratosthenes as eratosthenes_direct,
-)
-from segmented import (
-    _SEGMENT_SIZE,
-    count_primes as count_primes_segmented,
-    eratosthenes as eratosthenes_segmented,
-)
+import eratosthenes as direct
+import segmented
 
 Operation = Callable[[int], int | list[int] | np.ndarray]
 
@@ -35,7 +27,7 @@ def _python_mask(limit: int) -> list[bool]:
 
 
 def _python_eratosthenes(limit: int) -> list[int]:
-    limit = _validate_limit(limit)
+    limit = direct._validate_limit(limit)
     if limit < 2:
         return []
 
@@ -44,7 +36,7 @@ def _python_eratosthenes(limit: int) -> list[int]:
 
 
 def _python_count_primes(limit: int) -> int:
-    limit = _validate_limit(limit)
+    limit = direct._validate_limit(limit)
     if limit < 2:
         return 0
     return sum(_python_mask(limit))
@@ -59,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
         nargs="*",
         type=int,
         default=[1_000_000, 10_000_000],
+        help="inclusive limits to benchmark",
     )
     parser.add_argument(
         "--operation",
@@ -70,7 +63,12 @@ def _parse_args() -> argparse.Namespace:
         choices=("python", "direct", "segmented", "numpy", "all"),
         default="numpy",
     )
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=5,
+        help="executions per case (default: 5)",
+    )
     args = parser.parse_args()
 
     if any(limit < 0 for limit in args.limits):
@@ -81,20 +79,26 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _measure(function: Operation, limit: int, repeats: int) -> tuple[float, int, int]:
-    result = function(limit)
-    if isinstance(result, int):
-        count = result
-        result_bytes = 0
-    elif isinstance(result, np.ndarray):
-        count = result.size
-        result_bytes = result.nbytes
-    else:
-        count = len(result)
-        result_bytes = sys.getsizeof(result) + sum(map(sys.getsizeof, result))
-    del result
+    durations = []
+    count = result_bytes = 0
 
-    duration = median(repeat(lambda: function(limit), repeat=repeats, number=1))
-    return duration, count, result_bytes
+    for execution in range(repeats):
+        started = perf_counter()
+        result = function(limit)
+        durations.append(perf_counter() - started)
+
+        if execution == 0:
+            if isinstance(result, int):
+                count = result
+            elif isinstance(result, np.ndarray):
+                count = result.size
+                result_bytes = result.nbytes
+            else:
+                count = len(result)
+                result_bytes = sys.getsizeof(result) + sum(map(sys.getsizeof, result))
+        del result
+
+    return median(durations), count, result_bytes
 
 
 def main() -> int:
@@ -105,18 +109,13 @@ def main() -> int:
             "count": _python_count_primes,
         },
         "direct": {
-            "find": eratosthenes_direct,
-            "count": count_primes_direct,
+            "find": direct.eratosthenes,
+            "count": direct.count_primes,
         },
         "segmented": {
-            "find": eratosthenes_segmented,
-            "count": count_primes_segmented,
+            "find": segmented.eratosthenes,
+            "count": segmented.count_primes,
         },
-    }
-    labels = {
-        "python": "Pure Python",
-        "direct": "NumPy Direct",
-        "segmented": "NumPy Segmented",
     }
     operation_names = (
         ("find", "count") if args.operation == "both" else (args.operation,)
@@ -134,14 +133,14 @@ def main() -> int:
     )
     print(runtime)
     print(
-        f"{'Limit':>14}  {'Algorithm':>15}  {'Operation':>9}  {'Median':>10}  "
-        f"{'Primes':>11}  {'Mask MiB':>10}  {'Result MiB':>10}"
+        f"{'Limit':>14}  {'Algorithm':>15}  {'Operation':>9}  {'Median time':>12}  "
+        f"{'Primes':>11}  {'Mask storage MiB':>16}  {'Result MiB':>10}"
     )
 
     failed = False
     for limit in args.limits:
         for algorithm in algorithm_names:
-            label = labels[algorithm]
+            label = "Python baseline" if algorithm == "python" else f"NumPy {algorithm}"
             for operation in operation_names:
                 try:
                     duration, count, result_bytes = _measure(
@@ -150,28 +149,22 @@ def main() -> int:
                         args.repeats,
                     )
                 except (MemoryError, ValueError) as error:
-                    print(
-                        f"{limit:>14,}  {label:>15}  {operation:>9}  "
-                        f"error: {error}"
-                    )
+                    print(f"{limit:>14,}  {label:>15}  {operation:>9}  error: {error}")
                     failed = True
                     continue
 
                 if limit < 2:
                     mask_bytes = 0
                 elif algorithm == "python":
-                    mask_bytes = (
-                        sys.getsizeof([])
-                        + ((limit + 1) // 2) * calcsize("P")
-                    )
+                    mask_bytes = sys.getsizeof([]) + ((limit + 1) // 2) * calcsize("P")
                 elif algorithm == "direct":
                     mask_bytes = (limit + 1) // 2
                 else:
-                    mask_bytes = min(_SEGMENT_SIZE, (limit - 1) // 2)
+                    mask_bytes = min(segmented._SEGMENT_SIZE, (limit - 1) // 2)
                 print(
                     f"{limit:>14,}  {label:>15}  {operation:>9}  "
-                    f"{duration:>9.6f}s  {count:>11,}  "
-                    f"{mask_bytes / 1024**2:>10.2f}  "
+                    f"{duration:>11.6g}s  {count:>11,}  "
+                    f"{mask_bytes / 1024**2:>16.2f}  "
                     f"{result_bytes / 1024**2:>10.2f}"
                 )
     return int(failed)

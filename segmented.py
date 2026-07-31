@@ -3,7 +3,8 @@ from math import isqrt
 
 import numpy as np
 
-from eratosthenes import _validate_limit, eratosthenes as _direct_sieve
+from eratosthenes import _validate_limit
+from eratosthenes import eratosthenes as _direct_sieve
 
 __all__ = ["count_primes", "eratosthenes"]
 
@@ -11,12 +12,15 @@ _SEGMENT_SIZE = 8 << 20
 
 
 def _segments(limit: int) -> Iterator[tuple[int, np.ndarray]]:
+    """Yield masks backed by one buffer; each is valid until the next iteration."""
     base_primes = _direct_sieve(isqrt(limit))[1:].tolist()
+    buffer = np.empty(min(_SEGMENT_SIZE, (limit - 1) // 2), dtype=np.bool_)
 
     for low in range(3, limit + 1, 2 * _SEGMENT_SIZE):
         size = min(_SEGMENT_SIZE, (limit - low) // 2 + 1)
         high = low + 2 * size - 2
-        mask = np.ones(size, dtype=np.bool_)
+        mask = buffer[:size]
+        mask.fill(True)
 
         for prime in base_primes:
             square = prime * prime
