@@ -30,6 +30,23 @@ print(count_primes_segmented(1_000_000))
 The limit is inclusive: `eratosthenes(30)` considers every integer from `0`
 through `30`.
 
+## What the comparison shows
+
+- **Python baseline:** makes the marking loops explicit so their cost can be
+  compared with NumPy slice assignments.
+- **Direct NumPy:** the simplest NumPy implementation, with one mask for the
+  whole range. It was substantially faster than the Python baseline at every
+  measured limit.
+- **Segmented NumPy:** reuses an 8 MiB marking buffer. On the test machine it
+  was faster than direct NumPy at 100 million and one billion, but not
+  consistently faster at smaller limits.
+
+Use `count_primes()` when you only need a count: it avoids constructing the
+output array and gives segmentation its clearest memory benefit. Returning
+every prime still requires substantial memory in either implementation.
+See the [benchmark results](#benchmark-results) for timings and machine details;
+the crossover point depends on hardware and workload.
+
 ## Repository layout
 
 | File | Purpose |
@@ -228,32 +245,16 @@ segmented: prime = low + 2 * index
 The direct sieve replaces its reserved first value with `2`. The segmented
 sieve handles `2` separately and concatenates its saved prime chunks once.
 
-## Performance characteristics
+## Complexity and memory
 
-NumPy does not improve the sieve's mathematical complexity. It helps here
-because the workload repeatedly updates regular positions in a homogeneous
-array:
-
-- one slice assignment replaces many Python loop iterations
-- the odd-only mask performs fewer writes and scans
-- each NumPy boolean occupies one byte in the array buffer
-- `flatnonzero()` and `count_nonzero()` perform their scans in NumPy code
+NumPy moves marking and scanning into native code without improving the
+sieve's mathematical complexity. For very small inputs, its setup costs can
+outweigh the work saved.
 
 A Python list stores references to shared `True` and `False` objects. On a
 64-bit CPython build, each list slot is normally an 8-byte pointer, while the
 NumPy mask stores each boolean value directly in one byte. This explains the
 approximately eightfold mask-payload difference reported by the benchmark.
-
-An `ndarray` also contains metadata such as its dtype, shape, strides, and data
-pointer. The benchmark reports selected payload estimates rather than total
-process memory, so allocator state, Python objects, NumPy metadata, and temporary
-arrays are not fully represented by those columns.
-
-For very small inputs, NumPy setup costs can outweigh the work saved. The
-performance difference is an empirical result for this workload, not a general
-rule that NumPy is faster than Python for every program.
-
-## Complexity and memory
 
 Let `n` be the inclusive limit, `B` the number of odd candidates in one
 segment, `S` the number of segments, and `π(n)` the number of primes no greater
@@ -271,10 +272,6 @@ than `n`.
   before the final concatenation.
 - `count_primes()` avoids the final prime array, so segmentation has its clearest
   memory benefit for count-only workloads.
-
-At `100,000,000`, the direct mask payload is about `47.68 MiB`; the reusable
-segment mask is `8 MiB`. The `5,761,455` returned `int64` primes require about
-`43.96 MiB` regardless of which NumPy marking strategy found them.
 
 ## Benchmark
 
@@ -319,7 +316,9 @@ result disposal happen after the timer stops.
 `Mask storage MiB` is representation-specific: the Python estimate includes the
 list header and pointer slots, while NumPy values include only array-buffer
 bytes. `Result MiB` reports the NumPy array payload or an approximate Python
-list-plus-integers size. These figures are not peak resident memory.
+list-plus-integers size. These figures are not peak resident memory: allocator
+state, object metadata, base-prime storage, and temporary arrays are not fully
+represented.
 
 Timings depend on the CPU, cache, RAM, NumPy build, operating-system load,
 thermal state, and power settings. Differences of only a few percent should be
@@ -358,16 +357,12 @@ Each duration is the median of seven executions.
 | 1,000,000,000 | NumPy direct | 2.46495 s | 2.2268 s | 476.84 MiB | 387.94 MiB |
 | 1,000,000,000 | NumPy segmented | 0.928623 s | 0.503757 s | 8.00 MiB | 387.94 MiB |
 
-### Results analysis
-
-- Direct NumPy was substantially faster than the Python-loop baseline wherever
-  both were measured.
-- Segmentation was not consistently faster at small limits, but was faster at
-  100 million and one billion on this machine while keeping its segment mask at
-  8 MiB. Different hardware or system load can move the crossover point.
-- Segmented `count` avoids both a large marking mask and the final prime array.
-  `find` must still return every prime; at one billion that result is much larger
-  than the segment mask.
+**The 8 MiB segment mask is not total RAM usage.** During segmented `find`,
+the saved chunks and the final output coexist while `np.concatenate()` copies
+the values. At one billion, those two sets of prime values alone occupy about
+776 MiB, roughly twice the reported `Find result` payload. This is a payload
+calculation, not a measurement of peak process memory. The `count` operation
+avoids both the chunks and the final output array.
 
 ## Validation
 
